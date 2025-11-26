@@ -8,110 +8,94 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * [서버 메인 클래스]
- * 과제 요구사항:
- * 1. 멀티스레드 소켓 프로그래밍 (교수님 제공 ChatServer.java 기반)
- * 2. 여러 클라이언트 동시 처리 (ThreadPool 사용)
- * 3. 귓속말 기능 구현 (접속자 명단 관리)
+/*
+ * [채팅 서버 메인 클래스]
+ * 클라이언트 접속을 받아서 ClientHandler에게 맡김
+ * 현재 접속 중인 클라이언트 목록을 관리하고, 
+ * broadcast / 귓속말(sendWhisper) 기능을 제공
+ * 회원 정보는 MemberManager를 통해 처리
  */
 public class WhisperChatServer {
 
-    private static final int PORT = 59001; // 교수님 코드와 동일한 포트
-    
-    // [과제 핵심: Whisper]
-    // 귓속말을 위해 "누가" 접속해 있는지 알아야 함.
-    // (Key: userId, Value: 그 사람에게 말 걸 수 있는 통로(PrintWriter))
-    // * ClientHandler들이 동시 접근하므로 'synchronized'로 보호해야 함 *
-    private final Map<String, PrintWriter> onlineClients = new HashMap<>();
+	// 서버 포트 번호
+	private static final int PORT = 59001;
 
-    // 회원가입, 로그인 등을 처리할 관리자 (서버에 1명만 존재)
-    private final MemberManager memberManager;
+	// 접속 중인 사용자 목록 (userId -> 출력 스트림)
+	private final Map<String, PrintWriter> onlineClients = new HashMap<>();
 
-    public WhisperChatServer() {
-        this.memberManager = new MemberManager(); // 회원 관리자 1명 생성
-    }
+	private final MemberManager memberManager;
 
-    public void start() {
-        System.out.println("[WhisperChatServer] 서버가 " + PORT + " 포트에서 시작됩니다...");
-        
-        // 멀티스레드 처리를 위한 스레드 풀 생성 (교수님 코드와 동일)
-        ExecutorService pool = Executors.newFixedThreadPool(20);
+	public WhisperChatServer() {
+		this.memberManager = new MemberManager();
+	}
 
-        try (ServerSocket listener = new ServerSocket(PORT)) {
-            while (true) {
-                // 1. 클라이언트 연결 대기 (교수님 코드와 동일)
-                Socket socket = listener.accept();
-                
-                // 2. 연결이 되면, 새 ClientHandler(일꾼)를 생성하여 스레드 풀에 맡김
-                //    (중요!) 일꾼에게 필요한 도구(소켓, 회원관리자, 서버본체)를 넘겨줌
-                ClientHandler handler = new ClientHandler(socket, memberManager, this);
-                pool.execute(handler);
-            }
-        } catch (Exception e) {
-            System.err.println("[WhisperChatServer] 서버 실행 중 오류: " + e.getMessage());
-            pool.shutdown();
-        }
-    }
+	/*
+	 * 서버 시작 ServerSocket으로 PORT에서 접속 대기 클라이언트가 접속할 때마다 ClientHandler를 만들어 스레드풀에 맡김
+	 */
+	public void start() {
+		System.out.println("[WhisperChatServer] 서버가 " + PORT + " 포트에서 시작됩니다...");
+		ExecutorService pool = Executors.newFixedThreadPool(20);
 
-    // --- (이하 ClientHandler들이 호출하는) 서버 공용 메서드 ---
-    // * 여러 스레드가 동시에 호출하므로 synchronized (줄 세우기) 필수 *
+		try (ServerSocket listener = new ServerSocket(PORT)) {
+			while (true) {
+				Socket socket = listener.accept();
+				ClientHandler handler = new ClientHandler(socket, memberManager, this);
+				pool.execute(handler);
+			}
+		} catch (Exception e) {
+			System.err.println("[WhisperChatServer] 서버 실행 중 오류: " + e.getMessage());
+			pool.shutdown();
+		}
+	}
 
-    /**
-     * [공용 기능 1] 새 클라이언트를 접속자 명단에 추가
-     */
-    public synchronized void addClient(String userId, PrintWriter out) {
-        onlineClients.put(userId, out);
-        System.out.println("[Server] " + userId + " 님이 명단에 추가됨. (현재 " + onlineClients.size() + "명)");
-    }
+	/*
+	 * 새 클라이언트 추가 userId와 그 사용자의 PrintWriter를 onlineClients에 등록 synchronized: 여러
+	 * 스레드가 동시에 접속/퇴장할 수 있으므로 동기화
+	 */
+	public synchronized void addClient(String userId, PrintWriter out) {
+		onlineClients.put(userId, out);
+		System.out.println("[Server] " + userId + " 접속. (현재 " + onlineClients.size() + "명)");
+	}
 
-    /**
-     * [공용 기능 2] 클라이언트를 접속자 명단에서 제거
-     */
-    public synchronized void removeClient(String userId) {
-        onlineClients.remove(userId);
-        System.out.println("[Server] " + userId + " 님이 명단에서 제거됨. (현재 " + onlineClients.size() + "명)");
-    }
+	// 사용자가 나가면 onlineClients에서 제거
+	public synchronized void removeClient(String userId) {
+		onlineClients.remove(userId);
+		System.out.println("[Server] " + userId + " 퇴장. (현재 " + onlineClients.size() + "명)");
+	}
 
-    /**
-     * [공용 기능 3] 이미 접속 중인 ID인지 확인 (로그인 시 중복 방지)
-     */
-    public synchronized boolean isUserOnline(String userId) {
-        return onlineClients.containsKey(userId);
-    }
+	// 해당 ID가 현재 접속 중인지 여부 확인 (중복 로그인 방지용)
+	public synchronized boolean isUserOnline(String userId) {
+		return onlineClients.containsKey(userId);
+	}
 
-    /**
-     * [공용 기능 4] 전체 방송 (MESSAGE 또는 SYSTEM)
-     */
-    public synchronized void broadcast(String type, String message) {
-        String line = type + " " + message;
-        // 명단에 있는 모든 사람(PrintWriter)에게 메시지 전송
-        for (PrintWriter writer : onlineClients.values()) {
-            writer.println(line);
-        }
-    }
+	/*
+	 * broadcast type: MESSAGE / SYSTEM 등 메시지 종류 message: 실제 내용 여기에서 <MYP2> 헤더를 한 번만
+	 * 붙여서, 모든 클라이언트에게 뿌려줌
+	 */
+	public synchronized void broadcast(String type, String message) {
+		String line = "<MYP2> " + type + " " + message;
+		for (PrintWriter writer : onlineClients.values()) {
+			writer.println(line);
+		}
+	}
 
-    /**
-     * [과제 핵심: Whisper] 귓속말 전송
-     * - A(fromId)가 B(toId)에게 메시지를 보냄
-     */
-    public synchronized boolean sendWhisper(String fromId, String toId, String message) {
-        // 명단에서 B(toId)를 찾음
-        PrintWriter targetWriter = onlineClients.get(toId);
-        
-        if (targetWriter != null) {
-            // B를 찾았음! -> B에게만 메시지 전송
-            // 프로토콜: PRIVATE_FROM [보낸사람ID] [메시지]
-            targetWriter.println("PRIVATE_FROM " + fromId + ": " + message);
-            return true; // 전송 성공
-        } else {
-            return false; // 전송 실패 (B가 오프라인이거나 없음)
-        }
-    }
+	/*
+	 * 귓속말 전송 fromId: 보낸 사람 toId: 받을 사람 message: 내용 대상이 접속 중이면 PRIVATE_FROM 메시지를 한 번
+	 * 보내고 true 반환 대상이 없으면 false 반환
+	 */
+	public synchronized boolean sendWhisper(String fromId, String toId, String message) {
+		PrintWriter targetWriter = onlineClients.get(toId);
 
-    // --- 서버 프로그램 실행 ---
-    public static void main(String[] args) {
-        WhisperChatServer server = new WhisperChatServer();
-        server.start();
-    }
+		if (targetWriter != null) {
+			targetWriter.println("<MYP2> PRIVATE_FROM " + fromId + ": " + message);
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	public static void main(String[] args) {
+		WhisperChatServer server = new WhisperChatServer();
+		server.start();
+	}
 }

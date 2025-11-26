@@ -2,176 +2,232 @@ package whisperchat;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.Scanner;
 
-/**
- * [메인 채팅 클라이언트]
- * 과제 요구사항:
- * 1. GUI 구현 (채팅창, 입력창, 귓속말 대상 선택창)
- * 2. 쓰레드 구현 (서버 메시지 수신용 Reader Thread)
- * 3. Whisper 프로토콜 지원 (GUI를 통해 대상 지정)
+/*
+ * 채팅 클라이언트 메인 창
+ * 서버와 소켓으로 연결된 후 채팅/귓속말 메시지를 송수신하는 GUI 클래스
+ * 송신 시: 모든 메시지에 <MYP2> 헤더를 붙여 서버로 전송
+ * 수신 시: <MYP2> 헤더를 제거한 뒤, 화면에는 내용만 출력
  */
 public class WhisperChatClient extends JFrame {
 
-    // 통신 도구 (LoginGUI로부터 물려받음)
-    private Socket socket;
-    private Scanner in;
-    private PrintWriter out;
-    private String myId;
+	private Socket socket;
+	private Scanner in;
+	private PrintWriter out;
+	private String myId;
 
-    // GUI 컴포넌트
-    private JTextArea messageArea;  // 채팅 내용 보여주는 곳
-    private JTextField targetField; // [과제 요구사항] 귓속말 대상 입력 (GUI Control)
-    private JTextField inputField;  // 메시지 입력
-    private JButton sendButton;     // 전송 버튼
+	// GUI 컴포넌트
+	private JTextArea messageArea;
+	private JTextField targetField;
+	private JTextField inputField;
+	private JButton sendButton;
+	private JToggleButton whisperButton;
+	private JButton logoutButton;
 
-    /**
-     * 생성자: LoginGUI에서 로그인 성공 후 호출됨
-     * 이미 연결된 소켓(socket, in, out)을 전달받아 대화를 이어감.
-     */
-    public WhisperChatClient(Socket socket, Scanner in, PrintWriter out, String myId) {
-        super("WhisperChat - " + myId); // 창 제목에 내 ID 표시
-        this.socket = socket;
-        this.in = in;
-        this.out = out;
-        this.myId = myId;
+	public WhisperChatClient(Socket socket, Scanner in, PrintWriter out, String myId) {
+		super("WhisperChat");
+		this.socket = socket;
+		this.in = in;
+		this.out = out;
+		this.myId = myId;
 
-        buildGUI();
-        
-        // 창 설정
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(500, 400);
-        setLocationRelativeTo(null); // 화면 중앙
-        setVisible(true);
+		// 채팅창 구성
+		buildGUI();
 
-        // [중요] 서버 메시지를 듣는 "수신 전용 스레드" 시작
-        startReaderThread();
-    }
+		setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+		setSize(500, 450);
+		setLocationRelativeTo(null);
+		setVisible(true);
 
-    private void buildGUI() {
-        setLayout(new BorderLayout());
+		// 서버로부터 오는 메시지를 별도 스레드에서 수신
+		startReaderThread();
+	}
 
-        // 1. 채팅 내용 영역 (수정 불가, 스크롤 가능)
-        messageArea = new JTextArea();
-        messageArea.setEditable(false);
-        messageArea.setLineWrap(true); // 자동 줄바꿈
-        messageArea.setFont(new Font("Monospaced", Font.PLAIN, 14));
-        add(new JScrollPane(messageArea), BorderLayout.CENTER);
+	// [GUI 구성]
+	// 상단: 접속 중인 사용자 정보 + Logout 버튼
+	// 중앙: 채팅 메시지 출력 영역
+	// 하단: 일반 채팅 입력 + Whisper 모드 전환/대상 ID 입력
+	private void buildGUI() {
+		setLayout(new BorderLayout());
 
-        // 2. 하단 입력 패널 (귓속말 대상 + 메시지 + 버튼)
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
-        bottomPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+		// 상단 패널 (User 정보, Logout 버튼)
+		JPanel topPanel = new JPanel(new BorderLayout());
+		topPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+		topPanel.setBackground(new Color(240, 240, 240));
 
-        // [과제 요구사항] 귓속말 대상을 정하는 GUI 컨트롤
-        JPanel targetPanel = new JPanel(new BorderLayout());
-        targetPanel.add(new JLabel("To: "), BorderLayout.WEST);
-        targetField = new JTextField(8); // 8글자 정도 크기
-        targetField.setToolTipText("비워두면 전체 채팅, ID를 적으면 귓속말");
-        targetPanel.add(targetField, BorderLayout.CENTER);
+		JLabel infoLabel = new JLabel("User: " + myId);
+		infoLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
+		topPanel.add(infoLabel, BorderLayout.WEST);
 
-        bottomPanel.add(targetPanel, BorderLayout.WEST);
+		logoutButton = new JButton("Logout");
+		logoutButton.setMargin(new Insets(2, 10, 2, 10));
+		topPanel.add(logoutButton, BorderLayout.EAST);
 
-        // 메시지 입력 필드
-        inputField = new JTextField();
-        bottomPanel.add(inputField, BorderLayout.CENTER);
+		add(topPanel, BorderLayout.NORTH);
 
-        // 전송 버튼
-        sendButton = new JButton("Send");
-        bottomPanel.add(sendButton, BorderLayout.EAST);
+		// 중앙: 채팅 내용 영역
+		messageArea = new JTextArea();
+		messageArea.setEditable(false);
+		messageArea.setLineWrap(true);
+		messageArea.setFont(new Font("Monospaced", Font.PLAIN, 14));
+		add(new JScrollPane(messageArea), BorderLayout.CENTER);
 
-        add(bottomPanel, BorderLayout.SOUTH);
+		// 하단 패널 (Whisper 설정 + 메시지 입력)
+		JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
+		bottomPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
 
-        // 이벤트 리스너 등록
-        ActionListener sendAction = e -> sendMessage();
-        inputField.addActionListener(sendAction); // 엔터키 처리
-        sendButton.addActionListener(sendAction); // 클릭 처리
-    }
+		JPanel targetPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
 
-    /**
-     * [핵심 로직] 메시지 전송
-     * targetField에 값이 있으면 "귓속말", 없으면 "전체말"로 판단
-     */
-    private void sendMessage() {
-        String msg = inputField.getText();
-        String target = targetField.getText().trim();
+		whisperButton = new JToggleButton("Whisper");
+		whisperButton.setBackground(Color.LIGHT_GRAY);
+		whisperButton.setMargin(new Insets(2, 10, 2, 10));
+		targetPanel.add(whisperButton);
 
-        if (msg.isEmpty()) return;
+		targetPanel.add(new JLabel("To:"));
 
-        if (target.isEmpty()) {
-            // 1. 전체 채팅 (그냥 메시지 전송)
-            out.println(msg);
-        } else {
-            // 2. 귓속말 (프로토콜: WHISPER <target> <msg>)
-            out.println("WHISPER " + target + " " + msg);
-        }
-        
-        inputField.setText(""); // 입력창 비우기
-        inputField.requestFocus(); // 포커스 유지
-    }
+		targetField = new JTextField(8);
+		targetField.setEnabled(false); // Whisper 모드가 아닐 때는 비활성화
+		targetField.setBackground(Color.LIGHT_GRAY);
+		targetPanel.add(targetField);
 
-    /**
-     * [백그라운드 스레드]
-     * GUI가 멈추지 않도록 별도 스레드에서 서버 메시지를 계속 읽음
-     */
-    private void startReaderThread() {
-        Thread reader = new Thread(() -> {
-            try {
-                while (in.hasNextLine()) {
-                    String line = in.nextLine();
-                    
-                    // GUI 업데이트는 반드시 Event Dispatch Thread에서 수행
-                    SwingUtilities.invokeLater(() -> processServerMessage(line));
-                }
-            } catch (Exception e) {
-                // 서버 연결 끊김
-            } finally {
-                SwingUtilities.invokeLater(() -> {
-                    JOptionPane.showMessageDialog(this, "서버와 연결이 끊어졌습니다.");
-                    System.exit(0);
-                });
-            }
-        });
-        reader.start();
-    }
+		bottomPanel.add(targetPanel, BorderLayout.WEST);
 
-    /**
-     * 서버가 보낸 프로토콜을 해석해서 채팅창에 보여줌
-     */
-    private void processServerMessage(String line) {
-        // 프로토콜에 따른 메시지 처리
-        if (line.startsWith("MESSAGE ")) {
-            // 일반 채팅: MESSAGE User: Hello
-            messageArea.append(line.substring(8) + "\n");
-            
-        } else if (line.startsWith("SYSTEM ")) {
-            // 시스템 알림: SYSTEM xxx joined
-            messageArea.append("[알림] " + line.substring(7) + "\n");
-            
-        } else if (line.startsWith("PRIVATE_FROM ")) {
-            // 귓속말 수신: PRIVATE_FROM sender: msg
-            String content = line.substring(13);
-            messageArea.append("(귓속말) " + content + "\n");
-            
-        } else if (line.startsWith("PRIVATE_SENT ")) {
-            // 내가 보낸 귓속말 확인: PRIVATE_SENT To target: msg
-            String content = line.substring(13);
-            messageArea.append("(보냄) " + content + "\n");
-            
-        } else if (line.startsWith("ERROR ")) {
-            // 에러 메시지
-            messageArea.append("[오류] " + line.substring(6) + "\n");
-            
-        } else {
-            // 그 외 메시지 (혹시 모를 디버깅용)
-            messageArea.append(line + "\n");
-        }
-        
-        // 스크롤을 항상 맨 아래로 유지
-        messageArea.setCaretPosition(messageArea.getDocument().getLength());
-    }
+		inputField = new JTextField();
+		bottomPanel.add(inputField, BorderLayout.CENTER);
+
+		sendButton = new JButton("Send");
+		bottomPanel.add(sendButton, BorderLayout.EAST);
+
+		add(bottomPanel, BorderLayout.SOUTH);
+
+		// [Logout 버튼] 서버에 /quit 전송 후 프로그램 종료
+		logoutButton.addActionListener(e -> {
+			out.println("<MYP2> /quit"); // 종료 프로토콜 전송
+			try {
+				socket.close();
+			} catch (Exception ex) {
+			}
+			System.exit(0);
+		});
+
+		// Whisper 모드 토글: 귓속말 모드 ON/OFF
+		whisperButton.addActionListener(e -> {
+			if (whisperButton.isSelected()) {
+				whisperButton.setBackground(new Color(255, 215, 0));
+				whisperButton.setText("Whisper ON");
+				targetField.setEnabled(true);
+				targetField.setBackground(Color.WHITE);
+				targetField.requestFocus();
+			} else {
+				whisperButton.setBackground(Color.LIGHT_GRAY);
+				whisperButton.setText("Whisper");
+				targetField.setEnabled(false);
+				targetField.setBackground(Color.LIGHT_GRAY);
+				targetField.setText("");
+			}
+		});
+
+		ActionListener sendAction = e -> sendMessage();
+		inputField.addActionListener(sendAction);
+		sendButton.addActionListener(sendAction);
+	}
+
+	/*
+	 * [메시지 전송] 일반 메시지: <MYP2> + msg 귓속말: <MYP2> WHISPER 대상ID 메시지
+	 */
+	private void sendMessage() {
+		String msg = inputField.getText().trim();
+		if (msg.isEmpty())
+			return;
+
+		if (whisperButton.isSelected()) {
+			String target = targetField.getText().trim();
+			if (target.isEmpty()) {
+				JOptionPane.showMessageDialog(this, "Enter Recipient ID");
+				return;
+			}
+			// 귓속말 프로토콜: <MYP2> WHISPER 대상ID 메시지
+			out.println("<MYP2> WHISPER " + target + " " + msg);
+		} else {
+			// 일반 메시지: <MYP2> + 실제 텍스트만 전송
+			out.println("<MYP2> " + msg);
+		}
+
+		inputField.setText("");
+		inputField.requestFocus();
+	}
+
+	// [수신 스레드 시작] 서버로부터 한 줄씩 메시지를 읽음
+	private void startReaderThread() {
+		Thread reader = new Thread(() -> {
+			try {
+				while (in.hasNextLine()) {
+					String line = in.nextLine();
+
+					// 수신 직후 프로토콜 헤더 제거 (UI에는 프로토콜 문자열이 보이지 않게 처리)
+					if (line.startsWith("<MYP2> ")) {
+						line = line.substring(7);
+					}
+
+					// final 변수로 복사 (람다식 사용 위해)
+					String finalLine = line;
+					SwingUtilities.invokeLater(() -> processServerMessage(finalLine));
+				}
+			} catch (Exception e) {
+			} finally {
+				SwingUtilities.invokeLater(() -> {
+					JOptionPane.showMessageDialog(this, "Disconnected from Server");
+					System.exit(0);
+				});
+			}
+		});
+		reader.start();
+	}
+
+	/*
+	 * [서버 메시지 처리] MESSAGE / SYSTEM / PRIVATE_FROM / PRIVATE_SENT / ERROR 타입에 따라
+	 * 채팅창에 다른 형식으로 출력
+	 */
+	private void processServerMessage(String line) {
+		// 일반 채팅: MESSAGE 이후 내용을 [전체] 태그로 출력
+		if (line.startsWith("MESSAGE ")) {
+			messageArea.append("[전체] " + line.substring(8) + "\n");
+
+			// 시스템 알림 메시지
+		} else if (line.startsWith("SYSTEM ")) {
+			messageArea.append("[알림] " + line.substring(7) + "\n");
+
+			// 서버에서 보낸 귓속말 수신: PRIVATE_FROM 보낸사람:메시지
+		} else if (line.startsWith("PRIVATE_FROM ")) {
+			String content = line.substring(13);
+			String[] parts = content.split(":", 2);
+			if (parts.length >= 2) {
+				messageArea.append("[귓속말] From " + parts[0] + ": " + parts[1] + "\n");
+			} else {
+				messageArea.append("[귓속말] " + content + "\n");
+			}
+
+			// 내가 보낸 귓속말에 대한 확인 메시지: PRIVATE_SENT 대상ID:메시지
+		} else if (line.startsWith("PRIVATE_SENT ")) {
+			String content = line.substring(13);
+			String[] parts = content.split(":", 2);
+			if (parts.length >= 2) {
+				messageArea.append("[귓속말] To " + parts[0] + ": " + parts[1] + "\n");
+			} else {
+				messageArea.append("[귓속말] " + content + "\n");
+			}
+			// 서버에서 내려준 에러 메시지
+		} else if (line.startsWith("ERROR ")) {
+			messageArea.append("[오류] " + line.substring(6) + "\n");
+			// 그 외 형식은 그대로 출력
+		} else {
+			messageArea.append(line + "\n");
+		}
+
+		messageArea.setCaretPosition(messageArea.getDocument().getLength());
+	}
 }
